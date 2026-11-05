@@ -129,6 +129,16 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .holes { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; font-size: 13.5px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--accent-soft); }
 .history { display: flex; gap: 6px; }
 .history .btn span { font-size: 15px; line-height: 1; }
+.holes { flex-direction: column; align-items: stretch; }
+.tool-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.tool-row .seg { min-width: 230px; background: var(--panel); }
+.brush-size { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+.brush-size input { width: 110px; }
+.brush-size output { font-family: var(--font-mono); font-size: 12px; color: var(--accent); min-width: 42px; }
+.tool-row .holes-actions { margin-left: auto; }
+.frame.brush, .frame.brush.zoomed { cursor: none; }
+.brush-ring { position: absolute; pointer-events: none; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.65), inset 0 0 0 1px rgba(0,0,0,.65); border-radius: 50%; transform: translate(-50%, -50%); z-index: 3; }
+.stroke-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .holes-actions { display: inline-flex; gap: 8px; }
 .frame.pick, .frame.pick.zoomed { cursor: crosshair; }
 .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -290,10 +300,17 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
       </div>
     </div>
     <div class="holes" id="holesBar">
-      <span id="holesText">Touche une zone du dessin pour la rendre transparente, par exemple l'intérieur d'une lettre.</span>
-      <span class="holes-actions" id="holesActions" hidden>
-        <button type="button" class="btn small" id="holeReset">Tout remettre</button>
-      </span>
+      <div class="tool-row">
+        <div class="seg" role="radiogroup" aria-label="Outil de retouche">
+          <label><input type="radio" name="tool" id="toolZone" value="zone" checked><span>Effacer une zone</span></label>
+          <label><input type="radio" name="tool" id="toolBrush" value="brush"><span>Gomme</span></label>
+        </div>
+        <label class="brush-size" id="brushSizeWrap" for="brushSize" hidden>Taille <input type="range" id="brushSize" min="3" max="60" value="14"><output id="brushSizeOut">14 px</output></label>
+        <span class="holes-actions" id="holesActions" hidden>
+          <button type="button" class="btn small" id="holeReset">Tout remettre</button>
+        </span>
+      </div>
+      <span id="holesText">Touche une zone du dessin : toute la zone de cette couleur devient transparente.</span>
     </div>
     <div class="swatches" id="swatches"></div>
     <p class="hint" id="hint">Molette, pincement ou boutons + / − pour zoomer, glisser pour te déplacer. Couleurs de bas en haut : touche une couleur pour la retirer.</p>
@@ -923,6 +940,23 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
         if (p < w * h - w && idx[p + w] === c) { idx[p + w] = -1; st.push(p + w); }
       }
     }
+    // coups de gomme : seul ce qui est sous le pinceau devient transparent
+    if (opts.erase) for (const st of opts.erase) {
+      const r = Math.max(0.5, st.r), r2 = r * r, pts = st.pts;
+      const stamp = (cx, cy) => {
+        for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(h - 1, Math.ceil(cy + r)); y++)
+          for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(w - 1, Math.ceil(cx + r)); x++) {
+            const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+            if (dx * dx + dy * dy <= r2) idx[y * w + x] = -1;
+          }
+      };
+      if (pts.length === 1) stamp(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) {
+        const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / (r * 0.4)));
+        for (let k = 0; k <= n; k++) stamp(ax + (bx - ax) * k / n, ay + (by - ay) * k / n);
+      }
+    }
     if (opts.background && opts.background !== 'keep') removeBackground(idx, w, h, 'keep');
     const counts = new Array(palette.length).fill(0);
     for (let p = 0; p < idx.length; p++) if (idx[p] >= 0) counts[idx[p]]++;
@@ -1161,7 +1195,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
   }
 
   /* ---------- État ---------- */
-  const state = { source: null, sourceUrl: '', name: 'exemple', summary: null, result: null, exclude: new Set(), focus: 0, view: 'vec', raster: null, fidelity: null, diffUrl: '', crop: null, cropUrl: '', holes: [] };
+  const state = { source: null, sourceUrl: '', name: 'exemple', summary: null, result: null, exclude: new Set(), focus: 0, view: 'vec', raster: null, fidelity: null, diffUrl: '', crop: null, cropUrl: '', holes: [], erase: [] };
   const ctl = ['colors', 'detail', 'texture', 'minArea', 'clean', 'outline', 'maxFiles', 'budget'];
   const outFmt = { outline: (v) => (+v ? v + ' px' : 'non'), texture: (v) => (+v ? v : 'non'), colors: (v) => v, detail: (v) => v + ' px', minArea: (v) => v + ' px²', clean: (v) => v, maxFiles: (v) => v, budget: (v) => fmt(+v) + ' o' };
   const prepKeys = ['colors', 'detail', 'texture', 'minArea', 'clean', 'outline', 'bg'];
@@ -1241,7 +1275,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
   async function run() {
     if (!state.source) return;
     const o = opts();
-    const sig = prepKeys.map((k) => o[k]).join('|') + '|' + o.crop + '|' + JSON.stringify(state.holes) + '|' + state.sourceUrl;
+    const sig = prepKeys.map((k) => o[k]).join('|') + '|' + o.crop + '|' + JSON.stringify(state.holes) + JSON.stringify(state.erase) + '|' + state.sourceUrl;
     $('#busy').hidden = false;
     try {
       if (sig !== prepSig) {
@@ -1249,7 +1283,8 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
         const img = rasterize(o);
         state.raster = { data: img.data.slice(), width: img.width, height: img.height };
         const holes = state.holes.map((p) => [(p[0] - img.cr.x) * img.s, (p[1] - img.cr.y) * img.s, p[2]]);
-        const sum = await runner.prep({ data: img.data, width: img.width, height: img.height }, { colors: o.colors, background: o.bg === 'keep' ? 'keep' : o.bg, clean: o.clean, minArea: o.minArea, texture: o.texture, outline: o.bg === 'keep' ? 0 : o.outline, holes });
+        const erase = state.erase.map((st) => ({ r: st.r * img.s, pts: st.pts.map((q) => [(q[0] - img.cr.x) * img.s, (q[1] - img.cr.y) * img.s]) }));
+        const sum = await runner.prep({ data: img.data, width: img.width, height: img.height }, { colors: o.colors, background: o.bg === 'keep' ? 'keep' : o.bg, clean: o.clean, minArea: o.minArea, texture: o.texture, outline: o.bg === 'keep' ? 0 : o.outline, holes, erase });
         if (my !== prepRun) return;
         prepSig = sig; state.summary = sum;
         const valid = new Set(sum.layers.map((l) => l.color));
@@ -1293,7 +1328,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     }
     if (!state.result) return;
     zr.innerHTML = combinedSvg(state.result);
-    frame.classList.add('pick');
+    frame.classList.add(tool() === 'brush' ? 'brush' : 'pick');
     applyZoom();
     applyFocus();
   }
@@ -1483,13 +1518,22 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
   const ptrs = new Map();
   let drag = null, pinch = null;
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  let spaceDown = false;
+  document.addEventListener('keydown', (e) => { if (e.code === 'Space' && !/INPUT|TEXTAREA|BUTTON/.test(e.target.tagName)) { spaceDown = true; if (tool() === 'brush') e.preventDefault(); } });
+  document.addEventListener('keyup', (e) => { if (e.code === 'Space') spaceDown = false; });
+  $('#viewInner').addEventListener('contextmenu', (e) => { if (e.target.closest('.frame') && tool() === 'brush') e.preventDefault(); });
   $('#viewInner').addEventListener('pointerdown', (e) => {
     const f = e.target.closest('.frame'); if (!f) return;
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (ptrs.size === 1) { drag = { x: e.clientX, y: e.clientY, tx: zoom.tx, ty: zoom.ty }; zoomMoved = false; }
-    else if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: dist(a, b) || 1, z: zoom.z }; drag = null; zoomMoved = true; }
+    if (ptrs.size === 1 && tool() === 'brush' && state.view === 'vec' && state.result && e.button === 0 && !spaceDown) {
+      e.preventDefault(); startStroke(e); zoomMoved = true; return;
+    }
+    if (ptrs.size === 1) { drag = { x: e.clientX, y: e.clientY, tx: zoom.tx, ty: zoom.ty }; zoomMoved = tool() === 'brush'; }
+    else if (ptrs.size === 2) { cancelStroke(); const [a, b] = [...ptrs.values()]; pinch = { d: dist(a, b) || 1, z: zoom.z }; drag = null; zoomMoved = true; }
   });
   window.addEventListener('pointermove', (e) => {
+    moveRing(e);
+    if (stroke && ptrs.has(e.pointerId)) { ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); extendStroke(e); return; }
     if (!ptrs.has(e.pointerId)) return;
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const f = document.querySelector('#viewInner .frame'); if (!f) return;
@@ -1501,11 +1545,12 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 5) zoomMoved = true;
-      if (zoomMoved && zoom.z > 1) { zoom.tx = drag.tx + dx; zoom.ty = drag.ty + dy; f.classList.add('dragging'); applyZoom(); }
+      if ((zoomMoved || tool() === 'brush') && zoom.z > 1) { zoom.tx = drag.tx + dx; zoom.ty = drag.ty + dy; f.classList.add('dragging'); applyZoom(); }
     }
   });
   const ptrUp = (e) => {
     if (!ptrs.delete(e.pointerId)) return;
+    if (stroke && !ptrs.size) endStroke();
     if (ptrs.size < 2) pinch = null;
     if (!ptrs.size) { drag = null; const f = document.querySelector('#viewInner .frame'); if (f) f.classList.remove('dragging'); }
   };
@@ -1514,15 +1559,75 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
   window.addEventListener('resize', () => applyZoom());
 
   /* ---------- Zones transparentes à la main ---------- */
+  function tool() { const t = document.querySelector('input[name=tool]:checked'); return t ? t.value : 'zone'; }
   function renderHoles() {
-    const n = state.holes.length;
-    $('#holesText').textContent = n
-      ? n + ' zone' + (n > 1 ? 's' : '') + ' rendue' + (n > 1 ? 's' : '') + ' transparente' + (n > 1 ? 's' : '') + '. Un mauvais clic ? Annuler ou Ctrl+Z.'
-      : 'Touche une zone du dessin pour la rendre transparente, par exemple l\'intérieur d\'une lettre.';
+    const n = state.holes.length + state.erase.length;
+    const brush = tool() === 'brush';
+    const help = brush
+      ? 'Passe la gomme sur le dessin : seul ce qui est sous le cercle disparaît. Pour te déplacer quand tu as zoomé : clic droit ou Espace + glisser.'
+      : 'Touche une zone du dessin : toute la zone de cette couleur devient transparente.';
+    $('#holesText').textContent = help + (n ? ' ' + n + ' retouche' + (n > 1 ? 's' : '') + ' (Annuler ou Ctrl+Z pour revenir).' : '');
     $('#holesActions').hidden = !n;
+    $('#brushSizeWrap').hidden = !brush;
   }
+
+  /* ---------- Gomme ---------- */
+  let stroke = null, ring = null;
+  function brushCr() {
+    const im = state.source, W0 = im.naturalWidth, H0 = im.naturalHeight;
+    return ($('#crop').checked && state.crop) ? state.crop : { x: 0, y: 0, w: W0, h: H0 };
+  }
+  function toSource(e) {
+    const zr = document.querySelector('#viewInner .zoomer'); if (!zr) return null;
+    const rect = zr.getBoundingClientRect(), cr = brushCr();
+    return { x: cr.x + (e.clientX - rect.left) / rect.width * cr.w, y: cr.y + (e.clientY - rect.top) / rect.height * cr.h, k: cr.w / rect.width };
+  }
+  function moveRing(e) {
+    const f = document.querySelector('#viewInner .frame');
+    const show = f && tool() === 'brush' && state.view === 'vec' && e.target && e.target.closest && e.target.closest('.frame') === f;
+    if (!show) { if (ring) ring.hidden = true; return; }
+    if (!ring || ring.parentNode !== f) { ring = document.createElement('div'); ring.className = 'brush-ring'; f.appendChild(ring); }
+    const r = +$('#brushSize').value, fr = f.getBoundingClientRect();
+    ring.hidden = false;
+    ring.style.width = ring.style.height = (r * 2) + 'px';
+    ring.style.left = (e.clientX - fr.left) + 'px'; ring.style.top = (e.clientY - fr.top) + 'px';
+  }
+  function startStroke(e) {
+    const p = toSource(e); if (!p) return;
+    const zr = document.querySelector('#viewInner .zoomer'), cr = brushCr();
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'stroke-overlay');
+    svg.setAttribute('viewBox', '0 0 ' + cr.w + ' ' + cr.h);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    const pl = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    const r = +$('#brushSize').value * p.k;
+    pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', 'rgba(230,20,110,.55)');
+    pl.setAttribute('stroke-width', String(r * 2)); pl.setAttribute('stroke-linecap', 'round'); pl.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(pl); zr.appendChild(svg);
+    stroke = { r, pts: [[p.x, p.y]], svg, pl, cr };
+    drawStroke();
+  }
+  function drawStroke() {
+    const pts = stroke.pts.length === 1 ? [stroke.pts[0], [stroke.pts[0][0] + 0.01, stroke.pts[0][1]]] : stroke.pts;
+    stroke.pl.setAttribute('points', pts.map((q) => (q[0] - stroke.cr.x) + ',' + (q[1] - stroke.cr.y)).join(' '));
+  }
+  function extendStroke(e) {
+    const p = toSource(e); if (!p) return;
+    const last = stroke.pts[stroke.pts.length - 1];
+    if (Math.hypot(p.x - last[0], p.y - last[1]) < stroke.r * 0.35) return;
+    stroke.pts.push([p.x, p.y]); drawStroke();
+  }
+  function cancelStroke() { if (stroke) { stroke.svg.remove(); stroke = null; } }
+  function endStroke() {
+    const st = stroke; stroke = null;
+    state.erase.push({ r: st.r, pts: st.pts.map((q) => [Math.round(q[0] * 10) / 10, Math.round(q[1] * 10) / 10]) });
+    renderHoles(); commit(); schedule(0);
+  }
+  document.querySelectorAll('input[name=tool]').forEach((el) => el.addEventListener('change', () => { renderHoles(); renderView(); }));
+  $('#brushSize').addEventListener('input', () => { $('#brushSizeOut').textContent = $('#brushSize').value + ' px'; });
   $('#viewInner').addEventListener('click', (e) => {
     if (zoomMoved) { zoomMoved = false; return; }
+    if (tool() === 'brush') return;
     if (state.view !== 'vec' || !state.result || !state.source) return;
     const frame = e.target.closest('.zoomer'); if (!frame) return;
     const hit = e.target.closest('path');
@@ -1534,7 +1639,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     state.holes.push([cr.x + fx * cr.w, cr.y + fy * cr.h, hit.getAttribute('fill')]);
     renderHoles(); commit(); schedule(0);
   });
-  $('#holeReset').addEventListener('click', () => { state.holes = []; renderHoles(); commit(); schedule(0); });
+  $('#holeReset').addEventListener('click', () => { state.holes = []; state.erase = []; renderHoles(); commit(); schedule(0); });
 
   /* ---------- Retour arrière : chaque action enregistre l'état précédent ---------- */
   const hist = { undo: [], redo: [], cur: null };
@@ -1547,6 +1652,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
       mode: document.querySelector('input[name=mode]:checked').value,
       crop: $('#crop').checked,
       holes: state.holes.map((p) => p.slice()),
+      erase: state.erase.map((s) => ({ r: s.r, pts: s.pts.map((q) => q.slice()) })),
       exclude: [...state.exclude]
     };
   }
@@ -1556,6 +1662,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     document.querySelector('input[name=mode][value="' + sn.mode + '"]').checked = true;
     $('#crop').checked = sn.crop;
     state.holes = sn.holes.map((p) => p.slice());
+    state.erase = sn.erase.map((s) => ({ r: s.r, pts: s.pts.map((q) => q.slice()) }));
     state.exclude = new Set(sn.exclude);
     renderHoles(); renderSwatches(); updateSrcInfo(); schedule(0);
   }
@@ -1600,7 +1707,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
   function loadUrl(url, name) {
     const im = new Image();
     im.onload = () => {
-      state.source = im; state.sourceUrl = url; state.name = name; state.exclude.clear(); state.focus = 0; state.holes = []; renderHoles(); zoom.z = 1; zoom.tx = 0; zoom.ty = 0;
+      state.source = im; state.sourceUrl = url; state.name = name; state.exclude.clear(); state.focus = 0; state.holes = []; state.erase = []; renderHoles(); zoom.z = 1; zoom.tx = 0; zoom.ty = 0;
       try { state.crop = findCrop(im); } catch (e) { state.crop = null; }
       state.cropUrl = state.crop ? cropPreviewUrl() : '';
       updateSrcInfo();
