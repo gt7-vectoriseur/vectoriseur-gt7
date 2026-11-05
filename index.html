@@ -617,7 +617,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     }
   }
 
-  function removeBackground(idx, w, h, mode, outline) {
+  function removeBackground(idx, w, h, mode, outline, inside) {
     if (mode === 'keep') return;
     const before = outline > 0 ? idx.slice() : null;
     const counts = new Map();
@@ -630,6 +630,43 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     if (bg < 0 || bv < border.length * 0.25) return;
     const n = w * h;
     if (mode === 'all') { for (let p = 0; p < n; p++) if (idx[p] === bg) idx[p] = -1; }
+    else if (inside) {
+      // On garde le fond à l'intérieur du logo : les trous du contour (coup de pinceau,
+      // cercle ouvert…) sont refermés le temps de trouver l'extérieur.
+      const S = Math.max(3, Math.round(Math.max(w, h) * 0.03));
+      const near = new Uint8Array(n).fill(255);
+      let front = [];
+      for (let p = 0; p < n; p++) if (idx[p] >= 0 && idx[p] !== bg) { near[p] = 0; front.push(p); }
+      const grow = (front, limit, ok) => {
+        for (let step = 1; step <= limit && front.length; step++) {
+          const diag = step % 2 === 0, next = [];
+          for (const p of front) {
+            const x = p % w, y = (p / w) | 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+              if ((!dx && !dy) || (!diag && dx && dy)) continue;
+              const xx = x + dx, yy = y + dy;
+              if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+              const b = yy * w + xx;
+              if (ok(b, step)) next.push(b);
+            }
+          }
+          front = next;
+        }
+      };
+      grow(front, S, (b, step) => { if (near[b] !== 255) return false; near[b] = step; return true; });
+      const out = new Uint8Array(n), stack = [];
+      for (const p of border) if (idx[p] === bg && near[p] === 255 && !out[p]) { out[p] = 1; stack.push(p); }
+      while (stack.length) {
+        const p = stack.pop(), x = p % w;
+        const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, p >= w ? p - w : -1, p < n - w ? p + w : -1];
+        for (const b of nb) if (b >= 0 && !out[b] && idx[b] === bg && near[b] === 255) { out[b] = 1; stack.push(b); }
+      }
+      // on rend à l'extérieur la bande refermée, jusqu'au bord du dessin
+      const seeds = [];
+      for (let p = 0; p < n; p++) if (out[p]) seeds.push(p);
+      grow(seeds, S, (b) => { if (out[b] || idx[b] !== bg || near[b] === 0) return false; out[b] = 1; return true; });
+      for (let p = 0; p < n; p++) if (out[p]) idx[p] = -1;
+    }
     else {
       const stack = [];
       for (const p of border) if (idx[p] === bg) { idx[p] = -1; stack.push(p); }
@@ -847,16 +884,37 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     let data = img.data;
     for (let t = 0; t < (opts.textureIter || 1) && opts.texture > 0; t++) data = kuwahara(data, w, h, opts.texture);
     const { idx, palette } = quantize(data, w, h, opts.colors || 6);
-    removeBackground(idx, w, h, opts.background || 'keep', opts.outline || 0);
+    removeBackground(idx, w, h, opts.background || 'keep', opts.outline || 0, !!opts.inside);
     if (opts.clean > 0) modeFilter(idx, w, h, opts.clean);
     despeckle(idx, w, h, opts.minArea || 1);
     // zones rendues transparentes à la main (clic dans l'aperçu)
+    // Le clic porte la couleur vue à l'écran : on cherche cette couleur autour du point
+    // (le tracé lissé peut déborder d'un ou deux pixels sur la couleur voisine).
     if (opts.holes) for (const pt of opts.holes) {
-      const x = Math.round(pt[0]), y = Math.round(pt[1]);
-      if (x < 0 || y < 0 || x >= w || y >= h) continue;
-      const c = idx[y * w + x];
+      const x0 = Math.round(pt[0]), y0 = Math.round(pt[1]);
+      if (x0 < 0 || y0 < 0 || x0 >= w || y0 >= h) continue;
+      let seed = y0 * w + x0;
+      if (pt[2]) {
+        const want = new Set();
+        palette.forEach((col, i) => { if (hex(col) === pt[2]) want.add(i); });
+        const R = Math.max(6, Math.round(Math.max(w, h) * 0.015));
+        seed = -1;
+        for (let rr = 0; rr <= R && seed < 0; rr++) {
+          let best = -1, bd = Infinity;
+          for (let dy = -rr; dy <= rr; dy++) for (let dx = -rr; dx <= rr; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== rr) continue;
+            const x = x0 + dx, y = y0 + dy;
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            const q = y * w + x, d = dx * dx + dy * dy;
+            if (want.has(idx[q]) && d < bd) { bd = d; best = q; }
+          }
+          seed = best;
+        }
+        if (seed < 0) continue;
+      }
+      const c = idx[seed];
       if (c < 0) continue;
-      const st = [y * w + x]; idx[y * w + x] = -1;
+      const st = [seed]; idx[seed] = -1;
       while (st.length) {
         const p = st.pop(), px = p % w;
         if (px > 0 && idx[p - 1] === c) { idx[p - 1] = -1; st.push(p - 1); }
@@ -1190,7 +1248,7 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
         const my = ++prepRun;
         const img = rasterize(o);
         state.raster = { data: img.data.slice(), width: img.width, height: img.height };
-        const holes = state.holes.map((p) => [(p[0] - img.cr.x) * img.s, (p[1] - img.cr.y) * img.s]);
+        const holes = state.holes.map((p) => [(p[0] - img.cr.x) * img.s, (p[1] - img.cr.y) * img.s, p[2]]);
         const sum = await runner.prep({ data: img.data, width: img.width, height: img.height }, { colors: o.colors, background: o.bg === 'keep' ? 'keep' : o.bg, clean: o.clean, minArea: o.minArea, texture: o.texture, outline: o.bg === 'keep' ? 0 : o.outline, holes });
         if (my !== prepRun) return;
         prepSig = sig; state.summary = sum;
@@ -1467,12 +1525,13 @@ footer .wrap { padding-block: 16px 26px; color: var(--muted); font-size: 13px; }
     if (zoomMoved) { zoomMoved = false; return; }
     if (state.view !== 'vec' || !state.result || !state.source) return;
     const frame = e.target.closest('.zoomer'); if (!frame) return;
-    if (!e.target.closest('path')) { toast('Cet endroit est déjà transparent.'); return; }
+    const hit = e.target.closest('path');
+    if (!hit) { toast('Cet endroit est déjà transparent.'); return; }
     const rect = frame.getBoundingClientRect();
     const fx = (e.clientX - rect.left) / rect.width, fy = (e.clientY - rect.top) / rect.height;
     const im = state.source, W0 = im.naturalWidth, H0 = im.naturalHeight;
     const cr = ($('#crop').checked && state.crop) ? state.crop : { x: 0, y: 0, w: W0, h: H0 };
-    state.holes.push([cr.x + fx * cr.w, cr.y + fy * cr.h]);
+    state.holes.push([cr.x + fx * cr.w, cr.y + fy * cr.h, hit.getAttribute('fill')]);
     renderHoles(); commit(); schedule(0);
   });
   $('#holeReset').addEventListener('click', () => { state.holes = []; renderHoles(); commit(); schedule(0); });
